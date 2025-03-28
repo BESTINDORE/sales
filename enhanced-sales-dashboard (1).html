@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sales Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #90EE90;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        table, th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+        th {
+            background-color: #f2f2f2;
+            cursor: pointer;
+        }
+        #fileInput, #territoryFilter, #sheetUrlInput {
+            margin-bottom: 20px;
+            padding: 5px;
+            width: 100%;
+        }
+        .total-row {
+            font-weight: bold;
+            background-color: #f0f0f0;
+        }
+        .scrollable-table {
+            max-height: 400px;
+            overflow-y: auto;
+            display: block;
+        }
+        .error-message {
+            color: red;
+            margin-bottom: 10px;
+        }
+        .last-updated {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 10px;
+        }
+        .data-input-section {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        #refreshData {
+            padding: 5px 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Sales Dashboard</h2>
+        
+        <div id="errorContainer" class="error-message"></div>
+        
+        <div class="data-input-section">
+            <input type="text" id="sheetUrlInput" placeholder="Paste Google Sheets CSV URL">
+            <button id="refreshData">Fetch Data</button>
+        </div>
+
+        <div class="data-input-section">
+            <input type="file" id="fileInput" accept=".csv">
+        </div>
+        
+        <select id="territoryFilter">
+            <option value="All">All Territories</option>
+        </select>
+        
+        <div>
+            <h3>Total Sales: ₹<span id="totalSales">0</span></h3>
+        </div>
+        
+        <div class="last-updated">Last Updated: <span id="lastUpdated">N/A</span></div>
+        
+        <h3>Sales by Material Group</h3>
+        <div class="scrollable-table">
+            <table id="materialGroupTable">
+                <thead>
+                    <tr>
+                        <th>Material Group Description</th>
+                        <th>Quantity</th>
+                        <th>Net Value (₹)</th>
+                    </tr>
+                </thead>
+                <tbody id="materialTable"></tbody>
+            </table>
+        </div>
+        
+        <h3>Sales by Customer</h3>
+        <div class="scrollable-table">
+            <table id="customerSalesTable">
+                <thead>
+                    <tr>
+                        <th>Customer Name</th>
+                        <th>Net Value (₹)</th>
+                    </tr>
+                </thead>
+                <tbody id="customerTable"></tbody>
+            </table>
+        </div>
+        
+        <h3>Monthly Sales</h3>
+        <div class="scrollable-table">
+            <table id="monthlyProductTable">
+                <thead id="monthlyTableHeader">
+                    <tr>
+                        <th>Month</th>
+                    </tr>
+                </thead>
+                <tbody id="monthlyTable"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let salesData = [];
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+        // Error handling function
+        function showError(message) {
+            const errorContainer = document.getElementById('errorContainer');
+            errorContainer.textContent = message;
+            errorContainer.style.display = 'block';
+        }
+
+        // Clear previous errors
+        function clearErrors() {
+            const errorContainer = document.getElementById('errorContainer');
+            errorContainer.textContent = '';
+            errorContainer.style.display = 'none';
+        }
+
+        // Fetch data from Google Sheets CSV URL
+        function fetchGoogleSheetData() {
+            clearErrors();
+            const googleSheetUrl = document.getElementById('sheetUrlInput').value.trim();
+            
+            if (!googleSheetUrl) {
+                showError("Please enter a valid Google Sheets CSV URL");
+                return;
+            }
+
+            Papa.parse(googleSheetUrl, {
+                download: true,
+                header: true,
+                dynamicTyping: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    console.log("Parsed Data:", results.data);
+                    
+                    // Validate required columns
+                    const requiredColumns = [
+                        'Territory Place', 
+                        'NET VALUE', 
+                        'MATERIAL GRP DESCRIPTION', 
+                        'CUSTOMER NAME', 
+                        'month', 
+                        'QTY'
+                    ];
+                    
+                    const missingColumns = requiredColumns.filter(col => 
+                        !results.meta.fields.includes(col)
+                    );
+                    
+                    if (missingColumns.length > 0) {
+                        showError(`Error: Missing required columns: ${missingColumns.join(', ')}`);
+                        return;
+                    }
+                    
+                    // Filter out rows with missing critical data
+                    salesData = results.data.filter(row => 
+                        row['Territory Place'] && 
+                        row['NET VALUE'] !== null && 
+                        row['MATERIAL GRP DESCRIPTION'] && 
+                        row['CUSTOMER NAME'] && 
+                        row['month']
+                    );
+                    
+                    // Update last updated timestamp
+                    document.getElementById('lastUpdated').textContent = 
+                        new Date().toLocaleString();
+                    
+                    populateTerritoryFilter();
+                    updateDashboard();
+                },
+                error: function(error) {
+                    console.error("CSV Fetch Error:", error);
+                    showError("Error fetching data. Check the sheet URL and permissions.");
+                }
+            });
+        }
+
+        // File input event listener
+        document.getElementById('fileInput').addEventListener('change', function(event) {
+            clearErrors();
+            const file = event.target.files[0];
+            if (file) {
+                Papa.parse(file, {
+                    header: true,
+                    dynamicTyping: true,
+                    skipEmptyLines: true,
+                    complete: function(results) {
+                        console.log("Parsed Data:", results.data);
+                        
+                        // Validate required columns
+                        const requiredColumns = [
+                            'Territory Place', 
+                            'NET VALUE', 
+                            'MATERIAL GRP DESCRIPTION', 
+                            'CUSTOMER NAME', 
+                            'month', 
+                            'QTY'
+                        ];
+                        
+                        const missingColumns = requiredColumns.filter(col => 
+                            !results.meta.fields.includes(col)
+                        );
+                        
+                        if (missingColumns.length > 0) {
+                            showError(`Error: Missing required columns: ${missingColumns.join(', ')}`);
+                            return;
+                        }
+                        
+                        // Filter out rows with missing critical data
+                        salesData = results.data.filter(row => 
+                            row['Territory Place'] && 
+                            row['NET VALUE'] !== null && 
+                            row['MATERIAL GRP DESCRIPTION'] && 
+                            row['CUSTOMER NAME'] && 
+                            row['month']
+                        );
+                        
+                        // Update last updated timestamp
+                        document.getElementById('lastUpdated').textContent = 
+                            new Date().toLocaleString();
+                        
+                        populateTerritoryFilter();
+                        updateDashboard();
+                    },
+                    error: function(error) {
+                        console.error("CSV Parsing Error:", error);
+                        showError("Error parsing CSV file. Please check the file format.");
+                    }
+                });
+            }
+        });
+
+        // Add event listener for fetching Google Sheets data
+        document.getElementById('refreshData').addEventListener('click', fetchGoogleSheetData);
+
+        // Populate territory filter dropdown
+        function populateTerritoryFilter() {
+            const filterSelect = document.getElementById('territoryFilter');
+            filterSelect.innerHTML = '<option value="All">All Territories</option>';
+            
+            const territories = [...new Set(salesData.map(row => row['Territory Place']).filter(Boolean))];
+            territories.forEach(territory => {
+                const option = document.createElement('option');
+                option.value = territory;
+                option.textContent = territory;
+                filterSelect.appendChild(option);
+            });
+            
+            // Add event listener for filtering
+            filterSelect.addEventListener('change', updateDashboard);
+        }
+
+        // Update dashboard based on selected territory
+        function updateDashboard() {
+            const selectedTerritory = document.getElementById('territoryFilter').value;
+            const filteredData = selectedTerritory === 'All' 
+                ? salesData 
+                : salesData.filter(row => row['Territory Place'] === selectedTerritory);
+            
+            const totalSales = filteredData.reduce((sum, row) => sum + (row['NET VALUE'] || 0), 0);
+            document.getElementById('totalSales').textContent = totalSales.toFixed(2);
+            
+            updateTables(filteredData);
+        }
+
+        // [Rest of the existing updateTables function remains the same]
+        // ... (copy the entire updateTables function from previous version)
+        function updateTables(filteredData) {
+            const materialTable = document.getElementById('materialTable');
+            const customerTable = document.getElementById('customerTable');
+            const monthlyTableHeader = document.getElementById('monthlyTableHeader');
+            const monthlyTable = document.getElementById('monthlyTable');
+            
+            // Clear existing table data
+            materialTable.innerHTML = '';
+            customerTable.innerHTML = '';
+            monthlyTableHeader.innerHTML = '<tr><th>Month</th></tr>';
+            monthlyTable.innerHTML = '';
+            
+            // Aggregate data
+            const materialSales = {};
+            const customerSales = {};
+            const monthlySales = {};
+
+            let materialTotalQuantity = 0;
+            let materialTotalNetValue = 0;
+            let customerTotalNetValue = 0;
+
+            // Dynamically find unique products
+            const productNames = [...new Set(filteredData.map(row => row['MATERIAL GRP DESCRIPTION']))];
+            
+            // Prepare monthly sales structure
+            monthNames.forEach(month => {
+                monthlySales[month] = {};
+                productNames.forEach(product => {
+                    monthlySales[month][product] = 0;
+                });
+            });
+
+            // Add dynamic header for monthly sales
+            productNames.forEach(product => {
+                const th = document.createElement('th');
+                th.textContent = product;
+                monthlyTableHeader.querySelector('tr').appendChild(th);
+            });
+
+            filteredData.forEach(row => {
+                // Material Group Sales
+                const material = row['MATERIAL GRP DESCRIPTION'];
+                if (!materialSales[material]) {
+                    materialSales[material] = { quantity: 0, netValue: 0 };
+                }
+                const rowQuantity = row['QTY'] || 0;
+                const rowNetValue = row['NET VALUE'] || 0;
+                materialSales[material].quantity += rowQuantity;
+                materialSales[material].netValue += rowNetValue;
+                materialTotalQuantity += rowQuantity;
+                materialTotalNetValue += rowNetValue;
+                
+                // Customer Sales
+                const customer = row['CUSTOMER NAME'];
+                const customerNetValue = rowNetValue;
+                customerSales[customer] = (customerSales[customer] || 0) + customerNetValue;
+                customerTotalNetValue += customerNetValue;
+                
+                // Monthly Sales by Product
+                const month = row['month'];
+                if (monthlySales[month] && monthlySales[month][material] !== undefined) {
+                    monthlySales[month][material] += rowQuantity;
+                }
+            });
+
+            // Populate Material Sales Table (Descending by Quantity)
+            const sortedMaterialSales = Object.entries(materialSales)
+                .sort((a, b) => b[1].quantity - a[1].quantity);
+            
+            sortedMaterialSales.forEach(([material, data]) => {
+                materialTable.innerHTML += `
+                    <tr>
+                        <td>${material}</td>
+                        <td>${data.quantity.toFixed(0)}</td>
+                        <td>${data.netValue.toFixed(2)}</td>
+                    </tr>`;
+            });
+            // Add total row for Material Sales
+            materialTable.innerHTML += `
+                <tr class="total-row">
+                    <td>Total</td>
+                    <td>${materialTotalQuantity.toFixed(0)}</td>
+                    <td>${materialTotalNetValue.toFixed(2)}</td>
+                </tr>`;
+            
+            // Populate Customer Sales Table (Sorted by Customer Name)
+            const sortedCustomerSales = Object.entries(customerSales)
+                .sort((a, b) => a[0].localeCompare(b[0]));
+            
+            sortedCustomerSales.forEach(([customer, value]) => {
+                customerTable.innerHTML += `
+                    <tr>
+                        <td>${customer}</td>
+                        <td>${value.toFixed(2)}</td>
+                    </tr>`;
+            });
+            // Add total row for Customer Sales
+            customerTable.innerHTML += `
+                <tr class="total-row">
+                    <td>Total</td>
+                    <td>${customerTotalNetValue.toFixed(2)}</td>
+                </tr>`;
+            
+            // Populate Monthly Sales Table
+            monthNames.forEach(month => {
+                const monthData = monthlySales[month];
+                const rowHtml = [`<td>${month}</td>`];
+                
+                productNames.forEach(product => {
+                    rowHtml.push(`<td>${monthData[product] || 0}</td>`);
+                });
+                
+                monthlyTable.innerHTML += `<tr>${rowHtml.join('')}</tr>`;
+            });
+        }
+    </script>
+</body>
+</html>
